@@ -35,6 +35,7 @@ ESTABLISHMENT_FORWARD = "establishment_forward"
 SANCTION_APPROVE = "sanction_approve"
 SANCTION_REJECT = "sanction_reject"
 WITHDRAW = "withdraw"
+LAPSE = "lapse"
 
 EMPLOYEE = "employee"
 SUBSTITUTE = "substitute"
@@ -42,6 +43,7 @@ UNIT_HEAD = "unit_head"
 ESTABLISHMENT = "establishment"
 AUTHORITY = "authority"
 DIRECTOR = "director"
+SYSTEM = "system"
 
 #: The facts a guard may read, all known before the move is made.
 FLAGS = ("needs_substitute", "director", "uh_final", "establishment")
@@ -141,6 +143,9 @@ TRANSITIONS: tuple[Transition, ...] = (
     _t(CANCELLATION, AWAITING_UNIT_HEAD, UNIT_HEAD_REJECT, UNIT_HEAD, REJECTED,
        "CW-EL-02 3", uh_final=True),
     *_decisions(CANCELLATION, "CW-EL-02 4-8"),
+    #: BR-EL-023: once the leave begins the cancellation can never be approved; it lapses.
+    *[_t(CANCELLATION, s, LAPSE, SYSTEM, WITHDRAWN, "BR-EL-023")
+      for s in (AWAITING_UNIT_HEAD, AWAITING_ESTABLISHMENT, AWAITING_SANCTION, AWAITING_DIRECTOR)],
 
     *_submission(EXTENSION, "CW-EL-03 1-2", consent=True),
     *_consent(EXTENSION, "CW-EL-03 3-5"),

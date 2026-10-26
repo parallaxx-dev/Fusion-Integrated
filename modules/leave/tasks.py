@@ -29,12 +29,15 @@ def process_sla() -> str:
 @shared_task(name="leave.year_boundary", acks_late=True, reject_on_worker_lost=True,
              soft_time_limit=3000, time_limit=3300)
 def year_boundary() -> str:
-    """Closes last year once, and credits this year; both are safe to repeat."""
+    """Lapses stale cancellations, closes last year once, and credits this year; all safe to
+    repeat."""
     from django.utils import timezone
 
-    from modules.leave.services import yearend
+    from modules.leave.services import workflow, yearend
 
+    lapsed = workflow.lapse_stale_cancellations()
     year = timezone.localdate().year
     run = yearend.run(year - 1)
     credited = yearend.credit_year(year)
-    return f"closed={year - 1}:{run.status} exceptions={len(run.exceptions)} credited={credited}"
+    return (f"closed={year - 1}:{run.status} exceptions={len(run.exceptions)} "
+            f"credited={credited} lapsed_cancellations={lapsed}")

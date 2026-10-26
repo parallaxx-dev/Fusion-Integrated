@@ -230,6 +230,35 @@ def test_rejected_cancellation_leaves_the_leave_approved(configured, client_for)
     assert balance(FACULTY_CSE, "CL") == D(7)
 
 
+def _approved_cl_with_pending_cancellation(client_for):
+    me = client_for(FACULTY_CSE)
+    leave_id = apply(me).json()["id"]
+    hod = client_for(HOD_CSE)
+    decide(hod, queue(hod)[0]["id"], "approve")
+    r = client_for(FACULTY_CSE).post(f"/api/v1/leave/requests/{leave_id}/cancellation",
+                                     {"reason": "x"}, format="json")
+    return leave_id, r.json()["id"]
+
+
+def test_a_cancellation_still_pending_when_the_leave_begins_lapses(configured, client_for):
+    from modules.leave.services import workflow
+
+    leave_id, cancel_id = _approved_cl_with_pending_cancellation(client_for)
+    # CW-EL-02 has no withdrawal, so only the lapse can close it.
+    r = client_for(FACULTY_CSE).post(f"/api/v1/leave/requests/{cancel_id}/withdraw", {},
+                                     format="json")
+    assert r.json()["error"]["code"] == "invalid_transition"
+    assert workflow.lapse_stale_cancellations() == 0
+    with freeze_time("2026-03-09 00:30:00+05:30"):
+        assert workflow.lapse_stale_cancellations() == 1
+        assert workflow.lapse_stale_cancellations() == 0
+    cancel = LeaveRequest.objects.get(pk=cancel_id)
+    assert (cancel.status, cancel.events.last().outcome) == ("withdrawn", "lapsed")
+    assert LeaveRequest.objects.get(pk=leave_id).status == "approved"
+    assert not Task.objects.filter(request=cancel, status=Task.OPEN).exists()
+    assert Outbox.objects.filter(dedupe_key=f"lapsed:{cancel_id}").exists()
+
+
 def _approved_staff_el(client_for, start, end):
     leave_id = apply(client_for(STAFF_RO), category="EL", start=start, end=end).json()["id"]
     reg = client_for(REGISTRAR)
@@ -303,6 +332,35 @@ def test_late_resumption_charges_the_extra_days(configured, client_for):
         r = decide(reg, queue(reg)[0]["id"], "review")
     assert r.json()["resumption"]["outcome"] == "late"
     assert balance(STAFF_RO, "EL") == D(23)
+
+
+def test_back_on_monday_after_leave_ending_friday_is_normal(configured, client_for):
+    leave_id = _approved_staff_el(client_for, date(2026, 3, 3), date(2026, 3, 6))
+    with freeze_time("2026-03-09 10:00:00+05:30"):
+        client_for(STAFF_RO).post(f"/api/v1/leave/requests/{leave_id}/resumption",
+                                  {"resumption_date": "2026-03-09"}, format="json")
+        reg = client_for(REGISTRAR)
+        r = decide(reg, queue(reg)[0]["id"], "review")
+    assert r.json()["resumption"]["outcome"] == "normal"
+    assert balance(STAFF_RO, "EL") == D(26)
+
+
+def test_early_return_after_year_end_restores_into_the_carried_balance(configured, client_for):
+    from modules.leave.services import yearend
+
+    with freeze_time("2026-12-21 10:00:00+05:30"):
+        leave_id = _approved_staff_el(client_for, date(2026, 12, 28), date(2027, 1, 8))
+    assert balance(STAFF_RO, "EL") == D(18)
+    with freeze_time("2027-01-01 00:30:00+05:30"):
+        assert yearend.run(2026).status == "completed"
+    assert (balance(STAFF_RO, "EL"), balance(STAFF_RO, "EL", 2027)) == (D(0), D(18))
+    with freeze_time("2027-01-05 10:00:00+05:30"):
+        client_for(STAFF_RO).post(f"/api/v1/leave/requests/{leave_id}/resumption",
+                                  {"resumption_date": "2027-01-05"}, format="json")
+        reg = client_for(REGISTRAR)
+        r = decide(reg, queue(reg)[0]["id"], "review")
+    assert r.json()["resumption"]["outcome"] == "early"
+    assert (balance(STAFF_RO, "EL"), balance(STAFF_RO, "EL", 2027)) == (D(0), D(22))
 
 
 def test_overview_and_document(configured, client_for):

@@ -8,7 +8,9 @@ from django.db.models import Max
 from django.utils import timezone
 
 from core.api.exceptions import ConflictError, NotFoundError
-from modules.leave.models import Holiday, HolidayCalendar, VacationPeriod
+from modules.leave.domain import categories as cat
+from modules.leave.domain import state_machine as sm
+from modules.leave.models import Holiday, HolidayCalendar, LeaveRequest, VacationPeriod
 from modules.leave.services import authz
 
 
@@ -103,6 +105,13 @@ def add_vacation(*, actor, label: str, start_date, end_date,
 @transaction.atomic
 def remove_vacation(*, actor, vacation_id: int) -> None:
     authz.require(actor, "leave.calendar.update")
-    deleted, _ = VacationPeriod.objects.filter(pk=vacation_id).delete()
-    if not deleted:
+    period = VacationPeriod.objects.select_for_update().filter(pk=vacation_id).first()
+    if period is None:
         raise NotFoundError("No such vacation period.")
+    # BR-EL-006: VL already applied for or sanctioned inside it would lose its ground.
+    if LeaveRequest.objects.filter(category=cat.VL, status__in=(*sm.PENDING, sm.APPROVED),
+                                   start_date__lte=period.end_date,
+                                   end_date__gte=period.start_date).exists():
+        raise ConflictError("Vacation Leave is pending or approved inside this period, so it "
+                            "cannot be removed.", code="vacation_in_use")
+    period.delete()

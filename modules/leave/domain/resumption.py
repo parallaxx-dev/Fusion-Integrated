@@ -60,10 +60,16 @@ def check_submission(*, category: str, leave_start: date, resumption_date: date,
                                 "never went on leave, it should have been cancelled.")
 
 
-def classify(*, approved_end: date, resumption_date: date) -> Outcome:
-    """Back on the day after the last approved day is normal; earlier is early; later is late."""
+def classify(*, approved_end: date, resumption_date: date,
+             closed_holidays: frozenset[date] = frozenset(),
+             weekend_days: frozenset[int] = frozenset({5, 6})) -> Outcome:
+    """Back by the first working day after the last approved day is normal (BR-EL-011 counts
+    only days inside the interval); earlier is early; later is late."""
     actual_end = resumption_date - timedelta(days=1)
-    if actual_end == approved_end:
+    due = approved_end + timedelta(days=1)
+    while due.weekday() in weekend_days or due in closed_holidays:
+        due += timedelta(days=1)
+    if approved_end <= actual_end < due:
         return Outcome(NORMAL, approved_end, Decimal(0))
     return Outcome(EARLY if actual_end < approved_end else LATE, actual_end,
                    Decimal((approved_end - actual_end).days))

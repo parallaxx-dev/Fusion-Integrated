@@ -119,7 +119,8 @@ def adjust(*, actor, user_id: int, year: int, category: str, delta, reference: s
                             f"balance cannot go below zero.", code="insufficient_balance")
     entry = accounts.post(user_id=person.user_id, year=year, category=category, delta=amount,
                           entry_type="adjustment",
-                          key=f"adjust:{person.user_id}:{reference.strip()[:80]}",
+                          key=f"adjust:{person.user_id}:{year}:{category}:"
+                              f"{reference.strip()[:80]}",
                           note=note.strip(), actor_id=actor.user_id)
     if entry is None:
         raise ConflictError("An adjustment with this reference has already been recorded.",

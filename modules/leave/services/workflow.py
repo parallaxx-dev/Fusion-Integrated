@@ -289,9 +289,14 @@ def withdraw(*, request_id: int, actor, reason: str = "") -> LeaveRequest:
     if req.status == sm.APPROVED:
         raise ConflictError("An approved leave cannot be withdrawn. Request its cancellation "
                             "instead, before it begins.", code="already_approved")
+    return _withdraw(req, sm.WITHDRAW, actor_lane=sm.EMPLOYEE, actor=actor,
+                     outcome="withdrawn", remarks=reason, why="was withdrawn by the applicant")
+
+
+def _withdraw(req: LeaveRequest, event: str, *, actor_lane: str, actor, outcome: str,
+              remarks: str, why: str) -> LeaveRequest:
     open_task = Task.objects.filter(request=req, status=Task.OPEN).first()
-    move(req, sm.WITHDRAW, actor_lane=sm.EMPLOYEE, actor=actor, outcome="withdrawn",
-         remarks=reason)
+    move(req, event, actor_lane=actor_lane, actor=actor, outcome=outcome, remarks=remarks)
     if open_task is not None:
         notifications.enqueue(
             topic="request.withdrawn", dedupe_key=f"withdrawn:{req.pk}",
@@ -299,5 +304,30 @@ def withdraw(*, request_id: int, actor, reason: str = "") -> LeaveRequest:
             designation="" if open_task.assignee_user_id else open_task.assignee_designation,
             subject=f"Leave request #{req.pk} was withdrawn",
             body=f"Leave request #{req.pk} ({req.category}, {req.start_date} to "
-                 f"{req.end_date}) was withdrawn by the applicant. No action is needed.")
+                 f"{req.end_date}) {why}. No action is needed.")
     return req
+
+
+def lapse_stale_cancellations() -> int:
+    """BR-EL-023: a cancellation still pending when its leave begins can never be approved;
+    close it rather than leave it waiting and holding up the account's year-end."""
+    ids = list(LeaveRequest.objects.filter(
+        kind=sm.CANCELLATION, status__in=sm.PENDING, parent__start_date__lte=today())
+        .values_list("pk", flat=True))
+    lapsed = 0
+    for pk in ids:
+        with transaction.atomic():
+            req = lock_request(pk)
+            if req.status not in sm.PENDING:
+                continue
+            _withdraw(req, sm.LAPSE, actor_lane=sm.SYSTEM, actor=None, outcome="lapsed",
+                      remarks="The leave began before the cancellation was decided.",
+                      why="lapsed because the leave began before it was decided")
+            notifications.enqueue(
+                topic="request.withdrawn", dedupe_key=f"lapsed:{req.pk}", user_id=req.user_id,
+                subject=f"Your cancellation request #{req.pk} lapsed",
+                body=f"Your leave from {req.start_date} began before the cancellation was "
+                     f"decided, so it stands as approved. Use an extension or your resumption "
+                     f"instead.")
+            lapsed += 1
+    return lapsed

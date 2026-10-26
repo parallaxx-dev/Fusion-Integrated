@@ -139,6 +139,9 @@ def test_adjustment_is_an_entry_with_an_idempotent_reference(configured, client_
     assert c.post("/api/v1/leave/admin/records/adjustments", body, format="json").status_code == 201
     r = c.post("/api/v1/leave/admin/records/adjustments", body, format="json")
     assert r.json()["error"]["code"] == "duplicate_reference"
+    # One office order may correct several categories or years.
+    assert c.post("/api/v1/leave/admin/records/adjustments", {**body, "category": "EL"},
+                  format="json").status_code == 201
     r = c.post("/api/v1/leave/admin/records/adjustments",
                {**body, "delta": "-500", "reference": "x"}, format="json")
     assert r.status_code in (400, 409)
@@ -192,3 +195,13 @@ def test_vacation_periods(configured, client_for):
     cal = client_for(FACULTY_CSE).get("/api/v1/leave/calendar?year=2026").json()
     assert cal["published"] and [v["label"] for v in cal["vacations"]] == ["Summer 2026"]
     assert date.fromisoformat(cal["holidays"][0]["date"]).year == 2026
+
+
+def test_a_vacation_period_with_vl_in_it_cannot_be_removed(configured, client_for):
+    r = client_for(FACULTY_CSE).post("/api/v1/leave/requests", apply_payload(
+        "VL", start=date(2026, 5, 18), end=date(2026, 5, 22)), format="json")
+    assert r.status_code == 201, r.content
+    c = admin(client_for)
+    [summer] = c.get("/api/v1/leave/admin/vacations").json()
+    r = c.delete(f"/api/v1/leave/admin/vacations/{summer['id']}")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "vacation_in_use"

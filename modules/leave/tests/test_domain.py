@@ -287,6 +287,18 @@ def test_resumption_classification():
     assert (late.kind, late.adjustment) == ("late", D(-2))
 
 
+def test_returning_on_the_next_working_day_is_normal():
+    """BR-EL-011 counts only days inside the interval; the weekend after it is not leave."""
+    friday = date(2026, 3, 6)
+    out = resumption.classify(approved_end=friday, resumption_date=date(2026, 3, 9))
+    assert (out.kind, out.adjustment, out.actual_end) == ("normal", D(0), friday)
+    holi = resumption.classify(approved_end=date(2026, 3, 3), resumption_date=date(2026, 3, 5),
+                               closed_holidays=frozenset({date(2026, 3, 4)}))
+    assert holi.kind == "normal"
+    late = resumption.classify(approved_end=friday, resumption_date=date(2026, 3, 10))
+    assert (late.kind, late.adjustment) == ("late", D(-3))
+
+
 def test_resumption_submission_rules():
     kw = {"category": "EL", "leave_start": date(2026, 3, 1), "today": date(2026, 3, 9)}
     resumption.check_submission(resumption_date=date(2026, 3, 9), **kw)

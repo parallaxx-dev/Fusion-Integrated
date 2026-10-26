@@ -11,7 +11,14 @@ from modules.leave.domain import resumption as rd
 from modules.leave.domain import routing, sla
 from modules.leave.domain import state_machine as sm
 from modules.leave.models import LeaveRequest, RequestEvent, Resumption, Task
-from modules.leave.services import accounts, authz, notifications, workflow
+from modules.leave.services import (
+    accounts,
+    authz,
+    configuration,
+    notifications,
+    workflow,
+    yearend,
+)
 
 
 def reviewer_for(leave: LeaveRequest) -> str:
@@ -77,18 +84,23 @@ def review(*, task_id: int, actor, remarks: str = "") -> Resumption:
         raise ConflictError("This resumption has already been reviewed.", code="task_closed")
     res = Resumption.objects.select_for_update().get(leave=leave)
     approved_end = workflow.effective_end(leave)
-    out = rd.classify(approved_end=approved_end, resumption_date=res.resumption_date)
+    out = rd.classify(approved_end=approved_end, resumption_date=res.resumption_date,
+                      closed_holidays=configuration.calendar_for(
+                          approved_end, res.resumption_date).view.closed,
+                      weekend_days=configuration.current_policy().weekend_days)
     accounts.lock(leave.user_id)
+    # A year already closed has moved this balance on; book where it now lives (BR-EL-005/008).
+    year, category, delta = yearend.booking_for(leave.user_id, leave.leave_year,
+                                                leave.category, out.adjustment)
     if out.kind == rd.LATE:
-        held = accounts.balances([leave.user_id], leave.leave_year)[leave.user_id][leave.category]
-        if held < -out.adjustment:
+        held = accounts.balances([leave.user_id], year)[leave.user_id][category]
+        if held < -delta:
             raise ConflictError(
-                f"The late return needs {-out.adjustment} more day(s) of {leave.category} and "
+                f"The late return needs {-delta} more day(s) of {category} and "
                 f"{held} remain. Regularise the excess (another leave, or an administrative "
                 f"record) before completing this review.", code="insufficient_balance")
-    if out.adjustment:
-        accounts.post(user_id=leave.user_id, year=leave.leave_year, category=leave.category,
-                      delta=out.adjustment,
+    if delta:
+        accounts.post(user_id=leave.user_id, year=year, category=category, delta=delta,
                       entry_type="reversal" if out.adjustment > 0 else "debit",
                       key=f"resumption:{res.pk}", request=leave,
                       note=f"{out.kind.title()} resumption on {res.resumption_date}",

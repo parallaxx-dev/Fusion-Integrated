@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 from django.db import transaction
 from django.utils import timezone
 
 from modules.directory import contracts as directory
+from modules.leave.domain import categories as cat
 from modules.leave.domain import state_machine as sm
 from modules.leave.domain import yearend as ye
 from modules.leave.models import PENDING_STATES, LeaveRequest, LedgerEntry, YearEndRun
@@ -68,6 +70,27 @@ def _close_account(user_id: int, year: int) -> int:
                          note=f"Year-end {year}") is not None:
             written += 1
     return written
+
+
+def is_closed(user_id: int, year: int) -> bool:
+    """Closed for this account: its year-end entries exist, or the whole run completed."""
+    return (YearEndRun.objects.filter(year=year, status="completed").exists()
+            or LedgerEntry.objects.filter(
+                user_id=user_id, idempotency_key__startswith=f"yearend:{year}:{user_id}:")
+            .exists())
+
+
+def booking_for(user_id: int, year: int, category: str,
+                delta: Decimal) -> tuple[int, str, Decimal]:
+    """Where a late change to a closed year's balance belongs: carried EL/COL into the next
+    year as is, VL as the EL it converted into (BR-EL-007/008); a lapsed balance stays put."""
+    rule = cat.get(category).year_end
+    while delta and rule != cat.LAPSE and is_closed(user_id, year):
+        if rule == cat.CONVERT:
+            category, rule = cat.EL, cat.get(cat.EL).year_end
+            delta = (delta / cat.VL_PER_EL).quantize(Decimal("0.01"))
+        year += 1
+    return year, category, delta
 
 
 def credit_year(year: int) -> int:
